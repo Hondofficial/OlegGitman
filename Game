@@ -1,0 +1,146 @@
+import random
+import telebot
+import json
+import os
+TOKEN = '8182979956:AAGdZ-z85CRpLHVxaIDva8kuI6ozzGCrBDM'  
+bot = telebot.TeleBot(TOKEN)
+user_states = {}  
+user_data = {}    
+HIGHSCORES_FILE = 'highscores.json'
+highscores = {}
+if os.path.exists(HIGHSCORES_FILE):
+    with open(HIGHSCORES_FILE, 'r') as f:
+        highscores = json.load(f)
+def save_highscores():
+    with open(HIGHSCORES_FILE, 'w') as f:
+        json.dump(highscores, f)
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    help_text = """
+Привет! Я бот с двумя играми:
+1. Игра с кубиком - команда /dice
+   Бросайте кубик и набирайте очки, цель - 100.
+2. Игра с числами - команда /numbers
+   Комбинируйте числа с операциями, чтобы приблизиться к целевому числу.
+3. Таблица рекордов - команда /top
+   Показывает лучшие результаты в игре с числами.
+
+Выберите игру и начните играть!
+"""
+    bot.reply_to(message, help_text)
+@bot.message_handler(commands=['top'])
+def show_highscores(message):
+    if not highscores:
+        bot.reply_to(message, "Таблица рекордов пока пуста.")
+        return    
+    sorted_scores = sorted(highscores.items(), key=lambda x: x[1]['difference'])[:10]    
+    response = "ТОП-10 лучших результатов \n\n"
+    for i, (user_id, data) in enumerate(sorted_scores, 1):
+        response += f"{i}. {data['name']}: разница {data['difference']} (цель: {data['target']}, результат: {data['result']})\n"    
+    bot.reply_to(message, response)
+@bot.message_handler(commands=['dice'])
+def start_dice(message):
+    chat_id = message.chat.id
+    user_states[chat_id] = {'s': 0}
+    bot.send_message(chat_id, "Игра с кубиком началась! Нажмите /roll чтобы бросить кубик.")
+
+@bot.message_handler(commands=['roll'])
+def roll_dice(message):
+    chat_id = message.chat.id
+    
+    if chat_id not in user_states:
+        user_states[chat_id] = {'s': 0}    
+    r = random.randint(1, 6)
+    user_state = user_states[chat_id]    
+    markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True)
+    markup.add('1', '10')
+    
+    msg = bot.send_message(chat_id, f"Выпало: {r}\nВыберите множитель (1 или 10):", reply_markup=markup)
+    bot.register_next_step_handler(msg, process_choice, r, user_state)
+def process_choice(message, r, user_state):
+    chat_id = message.chat.id
+    try:
+        v = int(message.text)
+        if v == 1:
+            user_state['s'] += r
+        elif v == 10:
+            user_state['s'] += r * 10
+        else:
+            bot.send_message(chat_id, "Пожалуйста, выберите 1 или 10.")
+            return            
+        bot.send_message(chat_id, f"Текущая сумма: {user_state['s']}", reply_markup=telebot.types.ReplyKeyboardRemove())        
+        if user_state['s'] >= 100:
+            bot.send_message(chat_id, "Поздравляем! Вы достигли 100 очков. Игра завершена.")
+            del user_states[chat_id]
+        else:
+            bot.send_message(chat_id, "Нажмите /roll чтобы бросить кубик снова.")            
+    except ValueError:
+        bot.send_message(chat_id, "Пожалуйста, введите число (1 или 10).")
+@bot.message_handler(commands=['numbers'])
+def start_numbers_game(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    rc= random.randint(33, 99)
+    sp=[random.randint(1, 6) for _ in range(5)]    
+    user_data[user_id]={
+        'rc':rc,
+        'sp':sp,
+        'current_value':sp[0],
+        'operations_received':0,
+        'chat_id':chat_id
+    }    
+    bot.send_message(chat_id, f"Игрок {message.from_user.first_name}, целевое число: {rc}")
+    bot.send_message(chat_id, f"Числа для операций: {', '.join(map(str, sp))}")
+    bot.send_message(chat_id, f"Текущее значение: {sp[0]}\nПришли мне одну из операций (+, -, *, /) для следующего числа {sp[1]}")
+@bot.message_handler(func=lambda message: message.text in ['+', '-', '*', '/'])
+def handle_operation(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id    
+    if user_id not in user_data:
+        bot.send_message(chat_id, "Сначала начните игру с помощью /numbers")
+        return    
+    data = user_data[user_id]    
+    if data['chat_id'] != chat_id:
+        bot.send_message(chat_id, "Пожалуйста, продолжайте игру в том же чате, где вы её начали.")
+        return    
+    operation = message.text
+    next_index = data['operations_received'] + 1    
+    if next_index >= len(data['sp']):
+        bot.send_message(chat_id, "Вы уже использовали все числа. Начните новую игру с /numbers")
+        return    
+    try:
+        if operation == '+':
+            data['current_value'] += data['sp'][next_index]
+        elif operation == '-':
+            data['current_value'] -= data['sp'][next_index]
+        elif operation == '*':
+            data['current_value'] *= data['sp'][next_index]
+        elif operation == '/':
+            data['current_value'] //= data['sp'][next_index]
+    except ZeroDivisionError:
+        bot.send_message(chat_id, "Ошибка: деление на ноль. Начните новую игру с /numbers")
+        del user_data[user_id]
+        return
+        data['operations_received'] += 1    
+    if data['operations_received'] == len(data['sp']) - 1:
+        it = abs(data['current_value'] - data['rc'])        
+        user_key = str(user_id)
+        if (user_key not in highscores) or (it < highscores[user_key]['difference']):
+            highscores[user_key] = {
+                'name': message.from_user.first_name,
+                'difference': it,
+                'target': data['rc'],
+                'result': data['current_value']
+            }
+            save_highscores()        
+        bot.send_message(chat_id, f"{message.from_user.first_name}, финальный результат: {data['current_value']}\n"
+                                f"Целевое число: {data['rc']}\n"
+                                f"Разница: {it}\n\n"
+                                f"Посмотреть таблицу рекордов: /top")        
+        del user_data[user_id]
+    else:
+        next_num = data['sp'][data['operations_received'] + 1]
+        bot.send_message(chat_id, f"{message.from_user.first_name}, текущее значение: {data['current_value']}\n"
+                                 f"Пришлите операцию для следующего числа {next_num}")
+if __name__ == '__main__':
+    bot.polling(none_stop=True)
